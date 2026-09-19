@@ -38,8 +38,8 @@ REFERENCE_H = 1122
 
 # Original monitor calibration from the final game.
 UI_REFERENCE = {
-    "main_monitor": {"x1": 282, "y1": 429, "x2": 733, "y2": 743},
-    "camera_monitor": {"x1": 824, "y1": 482, "x2": 1150, "y2": 738},
+    "main_monitor": {"x1": 282, "y1": 433, "x2": 739, "y2": 747},
+    "camera_monitor": {"x1": 824, "y1": 480, "x2": 1155, "y2": 748},
 }
 
 CAMERAS = {
@@ -225,6 +225,11 @@ def all_tasks_complete():
 
 def begin_new_turn_state():
     """Reset temporary turn effects and handle automatic door opening."""
+    # A camera detection is valid only for the camera check that revealed it.
+    # Any following action hides the previous detection until the player
+    # checks a camera again.
+    game_state["current_camera"] = None
+
     # Camera power cost applies only when a camera is checked this turn.
     game_state["camera_active"] = False
 
@@ -642,11 +647,6 @@ def parse_command(text):
     if any(x in s for x in ("repair wiring", "fix wiring", "wire connections", "wiring")):
         return do_task, ("wiring",), None
 
-    # Intercom
-    if "intercom" in s:
-        message = text
-        return use_intercom, (message,), None
-
     # Helpful commands
     if s in ("status", "game status", "check status"):
         return None, (), (
@@ -675,7 +675,6 @@ def parse_command(text):
             "transfer security files\n"
             "restart backup generator\n"
             "repair wire connections\n"
-            "use intercom\n"
             "status / tasks"
         )
 
@@ -696,11 +695,10 @@ def execute_turn(action_function, args=()):
     if game_state["won"]:
         return "YOU ALREADY SURVIVED THE NIGHT."
 
-    # Camera checks are observation only. Intercom also skips the normal
-    # enemy movement phase because a successful lure already moves a robot.
+    # Camera checks are observation only and do not trigger normal
+    # enemy movement during that turn.
     is_observation = action_function == check_camera
-    is_intercom_action = action_function == use_intercom
-    skip_enemy_movement = is_observation or is_intercom_action
+    skip_enemy_movement = is_observation
 
     # Monsters that were already at a door get to attack after this turn.
     door_monsters_before = {
@@ -715,7 +713,7 @@ def execute_turn(action_function, args=()):
     game_state["stage_action_count"] += 1
     response = action_function(*args)
 
-    # Camera checks and intercom normally do not trigger enemy movement.
+    # Camera checks normally do not trigger enemy movement.
     # However, the second player action must force monsters off CAM 5.
     if skip_enemy_movement and game_state["stage_action_count"] < 2:
         enemy_event = ""
@@ -819,6 +817,8 @@ BLACK = (0, 0, 0)
 PANEL = (12, 15, 13)
 BUTTON = (30, 45, 32)
 BUTTON_HOVER = (45, 70, 48)
+RESET_BUTTON = (150, 35, 35)
+RESET_BUTTON_HOVER = (190, 50, 50)
 BORDER = (75, 130, 85)
 
 background_surface = pil_to_surface(background_pil)
@@ -869,14 +869,20 @@ class Button:
         mouse = pygame.mouse.get_pos()
         hover = self.rect.collidepoint(mouse)
 
-        color = BUTTON_HOVER if hover and self.enabled else BUTTON
+        if self.label == "RESET NIGHT" and self.enabled:
+            color = RESET_BUTTON_HOVER if hover else RESET_BUTTON
+        else:
+            color = BUTTON_HOVER if hover and self.enabled else BUTTON
+
         if not self.enabled:
             color = (25, 25, 25)
 
         pygame.draw.rect(surface, color, self.rect, border_radius=4)
         pygame.draw.rect(surface, BORDER, self.rect, 1, border_radius=4)
 
-        text_color = GREEN if self.enabled else (80, 80, 80)
+        text_color = WHITE if self.label == "RESET NIGHT" and self.enabled else (
+            GREEN if self.enabled else (80, 80, 80)
+        )
         text = BUTTON_FONT.render(self.label, True, text_color)
         surface.blit(
             text,
@@ -1286,40 +1292,54 @@ def draw_instructions():
     title = BIG.render("NIGHTWATCH PROTOCOL", True, GREEN)
     screen.blit(
         title,
-        title.get_rect(center=(WINDOW_W // 2, 90)),
+        title.get_rect(center=(WINDOW_W // 2, 75)),
     )
 
     lines = [
         "SURVIVE FROM 12:00 AM TO 6:00 AM.",
         "",
-        "Complete all 10 maintenance steps before 6 AM.",
-        "Every action advances the clock by 20 minutes.",
+        "Your job is to finish every maintenance task before 6 AM.",
+        "There are 10 total maintenance steps across 3 tasks.",
+        "Every successful action advances the clock by 20 minutes.",
         "",
-        "CAMERAS: Checking a camera reveals a monster only if it is",
-        "physically inside that camera's location. Checking cameras",
-        "does NOT move the monsters.",
+        "MONSTERS:",
+        "Bon and Rex move through the building on their own.",
+        "They can move between the stage, halls and door zones.",
+        "You cannot see their location unless you check the matching camera.",
         "",
-        "DOORS: Close the matching door when a monster reaches it.",
-        "A closed door blocks an attack, but consumes extra power.",
+        "CAMERAS:",
+        "Checking a camera reveals a monster only if it is physically there.",
+        "The red dot is only a detection from that camera check.",
+        "After you perform another action, the detection disappears.",
+        "You must check the camera again to detect the monster again.",
         "",
-        "INTERCOM: Sometimes lures a monster one step away.",
-        "POWER: Cameras, doors, tasks and time all consume power.",
+        "DOORS:",
+        "Close the matching door when a monster reaches that door zone.",
+        "A closed door blocks an attack, but uses extra power.",
+        "",
+        "POWER & TIME:",
+        "Cameras, closed doors, maintenance and time use power.",
+        "If power reaches 0%, the cameras and doors stop working.",
+        "Watch the clock and finish all tasks before 6 AM.",
         "",
         "CAM 1 = LEFT DOOR    CAM 2 = RIGHT DOOR",
         "CAM 3 = WEST HALL   CAM 4 = EAST HALL",
         "CAM 5 = STAGE",
     ]
 
-    y = 155
+    y = 125
     for line in lines:
+        if y > WINDOW_H - 95:
+            break
+
         text = SMALL.render(line, True, WHITE if line else DIM_GREEN)
         screen.blit(text, text.get_rect(center=(WINDOW_W // 2, y)))
-        y += 27
+        y += 22
 
     prompt = FONT.render("PRESS ENTER OR SPACE TO START", True, GREEN)
     screen.blit(
         prompt,
-        prompt.get_rect(center=(WINDOW_W // 2, WINDOW_H - 55)),
+        prompt.get_rect(center=(WINDOW_W // 2, WINDOW_H - 45)),
     )
 
 
